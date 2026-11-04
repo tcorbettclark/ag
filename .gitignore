@@ -39,3 +39,9 @@ Thumbs.db
 state.json
 state.json.tmp
 output/
+
+# Packaging
+*.egg-info/
+dist/
+build/
+.pytest_cache/

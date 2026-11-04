@@ -13,9 +13,11 @@
     "long_pause_min_s": 15,
     "long_pause_max_s": 45,
     "session_refresh_min": 20,
-    "session_refresh_max": 35,
-    "max_navs_per_run": 500
+    "session_refresh_max": 35
   },
+  "run_hours": 8,
+  "max_navs_per_run": 2500,
+  "search_share": 0.6,
   "search_rescan_days": 7,
   "licensed_publishers": [
     "^christie$",

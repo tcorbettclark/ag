@@ -1,0 +1,178 @@
+"""Command line: `christie-hunter [run|reclassify|rebuild-reports|requeue-unavailable|check|summary]`."""
+
+import argparse
+import logging
+import random
+import signal
+import sys
+import time
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
+
+from . import __version__, config as config_mod, tools
+from .budget import RunBudget, format_hours, parse_duration
+from .constants import CONFIG_FILE, now_iso
+from .crawler import Crawler
+from .errors import StopRun
+from .reports import write_reports
+from .search import build_tasks, classify_pending, search_phase
+from .store import (Store, active_run_pid, clear_lock, require_idle,
+                    write_lock)
+
+COMMANDS = ("run", "reclassify", "rebuild-reports", "requeue-unavailable",
+            "check", "summary")
+
+
+# --- the run ------------------------------------------------------------------
+
+def run(cfg, hours=None, rescan=False, classify_only=False, search_only=False):
+    """One run: enumerate what is stale, then classify the backlog, until the
+    budget or the work runs out."""
+    run_hours = hours if hours is not None else cfg["run_hours"]
+    budget = RunBudget.start(run_hours, cfg["max_navs_per_run"])
+    store = Store()
+
+    Path(cfg["output_dir"]).mkdir(exist_ok=True)
+    logging.info("state: %d classified, %d pending classification",
+                 len(store.records), len(store.pending))
+    logging.info("run budget: %s", budget.describe())
+
+    crawler = Crawler(cfg, store)
+
+    def on_sig(signum, frame):
+        logging.info("signal received — stopping after the current page "
+                     "(progress is saved; re-run to resume)")
+        crawler.stop_requested = True
+    signal.signal(signal.SIGINT, on_sig)
+    signal.signal(signal.SIGTERM, on_sig)
+
+    run_start = now_iso()
+    reason = "completed"
+    attempted = set()   # searches this run has already tried (never retry)
+    try:
+        time.sleep(random.uniform(1, 10))  # don't start like a machine
+        with sync_playwright() as pw:
+            crawler.start(pw)
+            while True:
+                start_navs = crawler.navs
+                if not classify_only:
+                    # the enumeration phase gets its share of the budget only
+                    crawler.budget = budget.scaled(cfg["search_share"])
+                    search_phase(crawler, store, cfg, rescan, attempted)
+                if not search_only:
+                    crawler.budget = budget
+                    classify_pending(crawler, store)
+                if crawler.stop_requested:
+                    raise StopRun("interrupted (Ctrl-C)")
+
+                worked = crawler.navs > start_navs
+                pending = 0 if search_only else len(store.pending)
+                stale = [] if classify_only else [
+                    t.key for t in build_tasks(cfg) if t.key not in attempted]
+                if not pending and not stale:
+                    reason = "nothing left to do"
+                    break
+                if not worked:
+                    reason = "no progress possible this pass"
+                    break
+                if not crawler._budget_left():
+                    break
+    except StopRun as e:
+        reason = str(e)
+        logging.warning("run stopped: %s", reason)
+    finally:
+        crawler.close()
+        store.data["runs"].append({
+            "started": run_start, "ended": now_iso(),
+            "budget_hours": run_hours, "planned_end": budget.deadline.isoformat(),
+            "navs": crawler.navs, "end_reason": reason})
+        store.save()
+        write_reports(store, cfg)
+        n_match = sum(1 for r in store.records.values()
+                      if r.get("classification") == "match")
+        n_unclear = sum(1 for r in store.records.values()
+                        if (r.get("classification") or "").startswith("unclear"))
+        logging.info(
+            "run done after %s / %d navs (%s) | total: %d records, %d matches, "
+            "%d unclear, %d still pending. Re-run to resume.",
+            format_hours(budget.elapsed_h()), crawler.navs, reason,
+            len(store.records), n_match, n_unclear, len(store.pending))
+    return 0
+
+
+# --- cli ----------------------------------------------------------------------
+
+def build_parser():
+    ap = argparse.ArgumentParser(
+        prog="christie-hunter",
+        description="Find English-language Agatha Christie books on amazon.co.uk "
+                    "that are not published by HarperCollins or a known licensee.")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    sub = ap.add_subparsers(dest="command", metavar="COMMAND")
+
+    p = sub.add_parser("run", help="crawl (default)")
+    p.add_argument("--for", dest="duration", metavar="DURATION",
+                   help="how long to run for, e.g. 8h, 90m, 45s "
+                        "(default: run_hours in config.json)")
+    p.add_argument("--rescan", action="store_true",
+                   help="force re-enumeration of completed searches and the author page")
+    p.add_argument("--classify-only", action="store_true", help="skip enumeration")
+    p.add_argument("--search-only", action="store_true", help="skip classification")
+
+    sub.add_parser("reclassify",
+                   help="re-apply licensed_publishers to existing records")
+    sub.add_parser("rebuild-reports", help="regenerate output/*.csv from state.json")
+    sub.add_parser("requeue-unavailable",
+                   help="re-queue excluded_unavailable records")
+    sub.add_parser("summary", help="print classification counts from state.json")
+    pc = sub.add_parser("check", help="classify one ASIN/URL with forensics")
+    pc.add_argument("url", nargs="?", default="https://www.amazon.co.uk/dp/B0HJX3WB9T")
+    return ap
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or (argv[0] not in COMMANDS and argv[0] not in ("-h", "--help")):
+        argv.insert(0, "run")  # bare `christie-hunter` = a run
+    args = build_parser().parse_args(argv)
+
+    cfg = config_mod.load(CONFIG_FILE)
+
+    if args.command == "run":
+        hours = None
+        if args.duration:
+            try:
+                hours = parse_duration(args.duration)
+            except ValueError as e:
+                raise SystemExit(f"error: {e}")
+        Path(cfg["output_dir"]).mkdir(exist_ok=True)
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s %(levelname)s %(message)s",
+            handlers=[logging.FileHandler(Path(cfg["output_dir"]) / "run.log"),
+                      logging.StreamHandler(sys.stdout)])
+        # the log file keeps per-nav timings; the console stays readable
+        for h in logging.getLogger().handlers[1:]:
+            h.setLevel(logging.INFO)
+        require_idle(cfg)
+        write_lock(cfg)
+        try:
+            return run(cfg, hours=hours, rescan=args.rescan,
+                       classify_only=args.classify_only,
+                       search_only=args.search_only)
+        finally:
+            clear_lock(cfg)
+
+    require_idle(cfg)
+    if args.command == "reclassify":
+        return tools.reclassify_licensed(cfg)
+    if args.command == "rebuild-reports":
+        return tools.rebuild_reports(cfg)
+    if args.command == "requeue-unavailable":
+        return tools.requeue_unavailable(cfg)
+    if args.command == "summary":
+        return tools.dump_summary(cfg)
+    if args.command == "check":
+        return tools.check_one(cfg, args.url)
+    raise SystemExit(f"unknown command {args.command!r}")
