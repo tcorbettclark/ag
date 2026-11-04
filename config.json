@@ -50,6 +50,7 @@
     "^mondadori\\b",
     "^orion(?!')\\b",
     "^planeta\\b",
+    "^samuel\\s+french\\b",
     "^ted\\s+smart\\b",
     "^the\\s+book\\s+club$",
     "^viz\\s+media\\b",
