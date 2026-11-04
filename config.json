@@ -1,0 +1,25 @@
+{
+  "search": {
+    "generic_queries": ["agatha christie"],
+    "indices": ["stripbooks", "digital-text"],
+    "generic_max_pages": 25,
+    "title_max_pages": 3,
+    "author_max_pages": 25
+  },
+  "politeness": {
+    "min_delay_s": 4,
+    "max_delay_s": 10,
+    "long_pause_chance": 0.08,
+    "long_pause_min_s": 15,
+    "long_pause_max_s": 45,
+    "session_refresh_min": 20,
+    "session_refresh_max": 35,
+    "max_navs_per_run": 500
+  },
+  "search_rescan_days": 7,
+  "licensed_publishers": [
+    "\\blaurence\\s+king\\b",
+    "\\bBBC\\b"
+  ],
+  "output_dir": "output"
+}

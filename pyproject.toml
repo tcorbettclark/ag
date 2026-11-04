@@ -1,0 +1,8 @@
+[project]
+name = "christie-hunter"
+version = "0.1.0"
+description = "Find English-language Agatha Christie books/ebooks on amazon.co.uk NOT published by HarperCollins"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.49",
+]
