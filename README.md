@@ -14,7 +14,8 @@ uv run python christie_hunter.py
 
 Interrupt anytime with Ctrl-C (progress is saved). Re-run to resume; searches
 already completed within the last `search_rescan_days` (config.json) are
-skipped, already-classified ASINs are never re-fetched.
+skipped — including the author page, which used to be enumerated only once
+until `--rescan` — and already-classified ASINs are never re-fetched.
 
 Options: `--limit N` (cap navigations), `--rescan` (force re-enumeration of
 all searches), `--classify-only`, `--search-only`.

@@ -483,14 +483,23 @@ def build_tasks(cfg, limit_indices=None):
     return tasks
 
 
+def search_is_fresh(prog, rescan):
+    """True if this listing was enumerated recently enough to skip this run.
+
+    Shared by the paginated searches and the author page so both honour
+    `search_rescan_days`; `--rescan` overrides it for either.
+    """
+    if rescan or not prog["done"] or not prog["last_enumerated"]:
+        return False
+    last = datetime.fromisoformat(prog["last_enumerated"])
+    return (datetime.now(timezone.utc) - last).days < cfg["search_rescan_days"]
+
+
 def run_task(crawler, store, task, rescan):
     prog = store.progress(task.key)
-    fresh_days = cfg["search_rescan_days"]
-    if prog["done"] and not rescan and prog["last_enumerated"]:
-        last = datetime.fromisoformat(prog["last_enumerated"])
-        if (datetime.now(timezone.utc) - last).days < fresh_days:
-            logging.debug("skipping fresh-enough search %s", task.key)
-            return
+    if search_is_fresh(prog, rescan):
+        logging.debug("skipping fresh-enough search %s", task.key)
+        return
     page_no = 1 if rescan else prog["next_page"]
     logging.info("enumerating %s from page %d", task.key, page_no)
     completed = False
@@ -525,7 +534,8 @@ def run_task(crawler, store, task, rescan):
 
 def author_page_task(crawler, store, rescan):
     prog = store.progress("authorpage")
-    if prog["done"] and not rescan:
+    if search_is_fresh(prog, rescan):
+        logging.debug("skipping fresh-enough search authorpage")
         return
     logging.info("enumerating author page")
     try:
