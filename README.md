@@ -72,3 +72,33 @@ check (`excluded_harpercollins`, `excluded_not_christie`) — so a licensed
 French edition already filed as `excluded_not_english` is relabelled
 `excluded_licensed`, matching the pipeline's order. Like
 `requeue_unavailable.py`, it refuses to run while the crawler is active.
+
+## What to back up
+
+`state.json` is the whole logical state and the only file worth backing up for
+continuity. It holds:
+
+- `records` — every classified ASIN with all report fields (`classification`,
+  `title`, `publisher`, `language`, `price`, `evidence` paths, timestamps)
+- `pending` — the backlog: ASINs discovered but never fetched
+- `in_flight` — anything mid-fetch when the previous run died (re-queued on load)
+- `search_progress` — per-search `next_page`/`done`, which is what makes
+  completed searches skippable for `search_rescan_days`
+- `sources` — ASIN → the search that found it (superset of `records ∪ pending`)
+- `runs` — one summary per run (start, end, navs, end_reason)
+
+Nothing else is needed to regenerate the reports — `output/*.csv` are pure
+derived views, and `uv run python rebuild_reports.py` rebuilds them from
+`state.json` with no network access (byte-identical, verified).
+
+Back up two things, not one:
+
+| what | why |
+|---|---|
+| `state.json` | the logic: findings, backlog, search progress. Expensive to re-derive (rate-limited crawl) |
+| `output/evidence/` | the proof: timestamped PNG + HTML for every `match`/`unclear`. The record only stores the path; without the file it cannot be reproduced except by re-fetching the page |
+
+`config.json` and `christie_works.py` determine what gets searched and how it
+is classified, but both are in git. `output/run.log`, `console.log` and the
+CSVs are history/derived — safe to lose. `state.json` is written atomically
+(temp file + rename), so a killed run cannot leave it half-written.
