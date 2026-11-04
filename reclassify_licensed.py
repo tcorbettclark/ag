@@ -31,13 +31,18 @@ store = Store(STATE_FILE)
 changed = []
 for asin, rec in store.records.items():
     cls = rec.get("classification") or ""
-    # only records that were NOT already excluded for another reason can change
-    if cls and not cls.startswith("unclear") and cls != "match":
+    # the two gates that run BEFORE the licensed check decide the label;
+    # everything else is re-decided by it (licensed outranks author, language
+    # and availability in the pipeline, so "licensed French edition" is
+    # excluded_licensed, not excluded_not_english)
+    if cls in ("excluded_harpercollins", "excluded_not_christie"):
         continue
     publisher = rec.get("publisher")
     if not publisher:
         continue
     if any(p.search(publisher) for p in licensed):
+        if cls == "excluded_licensed":
+            continue  # already labelled; keep re-runs quiet
         changed.append((asin, cls, publisher))
         rec["classification"] = "excluded_licensed"
 
@@ -48,5 +53,5 @@ if not changed:
 store.save()
 write_reports(store, cfg)
 for asin, old, publisher in changed:
-    print(f"  {asin}  {old or '(none)':<18} -> excluded_licensed   [{publisher}]")
+    print(f"  {asin}  {old or '(none)':<20} -> excluded_licensed   [{publisher}]")
 print(f"\nRe-classified {len(changed)} records as excluded_licensed; reports rewritten.")

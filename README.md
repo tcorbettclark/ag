@@ -49,6 +49,11 @@ authorised licensee → Christie is the primary uncontaminated author →
 English language → buyable-new right now. 60% of each run's navigation
 budget goes to search, 40% to classification, so every run progresses both.
 
+Runtime is deliberately slow (4–10s random pauses, occasional long pauses,
+fresh browser session every ~20–35 navigations, hard navigation budget per
+run). A full sweep takes multiple overnight runs; state carries the work
+forward.
+
 ## Confirmed licensees
 
 `licensed_publishers` in config.json is a list of case-insensitive regexes
@@ -61,11 +66,9 @@ no re-crawl needed:
 uv run python reclassify_licensed.py   # re-apply the list to state.json + reports
 ```
 
-`reclassify_licensed.py` only touches records that are still `match` or
-`unclear*`, and regenerates the CSVs without any network access. Like
+`reclassify_licensed.py` regenerates the CSVs without any network access. It
+re-decides every record except the two gates that run *before* the licensed
+check (`excluded_harpercollins`, `excluded_not_christie`) — so a licensed
+French edition already filed as `excluded_not_english` is relabelled
+`excluded_licensed`, matching the pipeline's order. Like
 `requeue_unavailable.py`, it refuses to run while the crawler is active.
-
-Runtime is deliberately slow (4–10s random pauses, occasional long pauses,
-fresh browser session every ~20–35 navigations, hard navigation budget per
-run). A full sweep takes multiple overnight runs; state carries the work
-forward.
