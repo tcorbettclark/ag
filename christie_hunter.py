@@ -46,7 +46,8 @@ HC_DEFINITE = [
     r"collins\s+gems?\b",
     r"\bcollins\b",                                            # bare Collins = historic HC imprint
     r"\bfontana\b",
-    r"harper\s+(?:press|fiction|voyager|element|audio|design|luxe|one|true\s*crime|children)",
+    # NB: no `fiction` here — "HarperFiction" is a licensed audio publisher (config.json)
+    r"harper\s+(?:press|voyager|element|audio|design|luxe|one|true\s*crime|children)",
     r"harpercollins",                                          # no-space variants
     r"william\s+morrow",
     r"4\s*-?\s*th\s+estate|fourth\s+estate",
@@ -365,11 +366,12 @@ class Crawler:
         if hc_class(publisher) == "excluded_harpercollins":
             return "excluded_harpercollins", fields
 
-        # 3. licensed publishers (BBC, Laurence King, ...) are authorised
+        # 3. licensed publishers (BBC, Audible, Orion, ... — see config.json) are
+        #    authorised editions, so they are excluded exactly like HC
         if publisher and any(p.search(publisher) for p in self.licensed):
             return "excluded_licensed", fields
 
-        # 3. authorship quality: Christie must be the primary, uncontaminated author
+        # 4. authorship quality: Christie must be the primary, uncontaminated author
         if any(c in low for c in AUTHOR_CONTAMINATION):
             return "unclear_author", fields
         names = re.split(r"\bby\b", byline, maxsplit=1)[-1]

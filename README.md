@@ -23,8 +23,8 @@ all searches), `--classify-only`, `--search-only`.
 
 - `output/matches.csv` — the findings: Christie-authored, English, buyable now,
   publisher not a HarperCollins imprint and not a known authorised licensee
-  (licensed publishers like BBC and Laurence King are configurable in
-  config.json `licensed_publishers`)
+  (see `licensed_publishers` in config.json — BBC, Audible, Orion, Mondadori,
+  Blackstone, Der Hörverlag, …)
 - `output/unclear.csv` — flagged for human review (contaminated author credit,
   ambiguous publisher such as bare "Harper"/"Avon", missing publisher field)
 - `output/all_records.csv` — everything ever classified
@@ -48,6 +48,22 @@ publisher is not a definite HarperCollins imprint → publisher is not an
 authorised licensee → Christie is the primary uncontaminated author →
 English language → buyable-new right now. 60% of each run's navigation
 budget goes to search, 40% to classification, so every run progresses both.
+
+## Confirmed licensees
+
+`licensed_publishers` in config.json is a list of case-insensitive regexes
+matched against the publisher string. Anything matching is filed as
+`excluded_licensed` (authorised edition — not a rights problem) rather than
+`match`. Extend the list whenever a licensee is confirmed; no code change and
+no re-crawl needed:
+
+```bash
+uv run python reclassify_licensed.py   # re-apply the list to state.json + reports
+```
+
+`reclassify_licensed.py` only touches records that are still `match` or
+`unclear*`, and regenerates the CSVs without any network access. Like
+`requeue_unavailable.py`, it refuses to run while the crawler is active.
 
 Runtime is deliberately slow (4–10s random pauses, occasional long pauses,
 fresh browser session every ~20–35 navigations, hard navigation budget per
