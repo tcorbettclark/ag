@@ -116,6 +116,25 @@ def run(cfg, hours=None, rescan=False, classify_only=False, search_only=False):
 
 # --- cli ----------------------------------------------------------------------
 
+def setup_logging(cfg):
+    """One run.log for every command that touches the network.
+
+    The file keeps per-nav timings at DEBUG (`nav 42 [verify] load=3.1s ...`);
+    the console stays readable at INFO. `verify-matches` and `check` used to
+    log nowhere at all, which is why there were no timings for them.
+    """
+    out = Path(cfg["output_dir"])
+    out.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[logging.FileHandler(out / "run.log"),
+                  logging.StreamHandler(sys.stdout)])
+    for h in logging.getLogger().handlers[1:]:
+        h.setLevel(logging.INFO)
+    return logging.getLogger()
+
+
 def _duration(args):
     """--for, parsed into hours; None means "use run_hours from config"."""
     if not getattr(args, "duration", None):
@@ -175,17 +194,11 @@ def main(argv=None):
 
     cfg = config_mod.load(CONFIG_FILE)
 
+    if args.command in ("run", "verify-matches", "check"):
+        setup_logging(cfg)
+
     if args.command == "run":
         hours = _duration(args)
-        Path(cfg["output_dir"]).mkdir(exist_ok=True)
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(asctime)s %(levelname)s %(message)s",
-            handlers=[logging.FileHandler(Path(cfg["output_dir"]) / "run.log"),
-                      logging.StreamHandler(sys.stdout)])
-        # the log file keeps per-nav timings; the console stays readable
-        for h in logging.getLogger().handlers[1:]:
-            h.setLevel(logging.INFO)
         require_idle(cfg)
         write_lock(cfg)
         try:
@@ -203,10 +216,15 @@ def main(argv=None):
     if args.command == "requeue-unavailable":
         return tools.requeue_unavailable(cfg)
     if args.command == "verify-matches":
-        return tools.verify_matches(
-            cfg, hours=_duration(args), since_days=args.since_days,
-            include_unclear=args.include_unclear, limit=args.limit,
-            only=args.asin)
+        # it writes state.json, so it holds the single-writer lock like a run
+        write_lock(cfg)
+        try:
+            return tools.verify_matches(
+                cfg, hours=_duration(args), since_days=args.since_days,
+                include_unclear=args.include_unclear, limit=args.limit,
+                only=args.asin)
+        finally:
+            clear_lock(cfg)
     if args.command == "summary":
         return tools.dump_summary(cfg)
     if args.command == "check":

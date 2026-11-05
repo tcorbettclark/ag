@@ -104,9 +104,16 @@ def check_one(cfg, url):
         # `check` tells you the truth about what Amazon serves this crawler
         crawler.start(pw)
         crawler.page.set_default_timeout(5000)
+        crawler.phase = "check"
 
         t0 = time.time()
-        crawler.page.goto(url, timeout=60000, wait_until="domcontentloaded")
+        # raw goto on purpose: `check` must show whatever Amazon served, not
+        # raise DeadPage/Blocked like the crawl path does. Log it by hand so it
+        # still lands in run.log with the other per-nav timings.
+        got = crawler.page.goto(url, timeout=60000, wait_until="domcontentloaded")
+        logging.debug("nav 1 [check] load=%.1fs status=%s html=%.0fkB %s",
+                      time.time() - t0, got.status if got else "?",
+                      len(crawler.page.content()) / 1024, crawler.page.url)
         print(f"[{time.time()-t0:5.1f}s] page loaded: {crawler.page.url}")
         try:
             crawler.page.locator("#sp-cc-accept").click(timeout=2500)

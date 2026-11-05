@@ -65,8 +65,10 @@ read-only-ish; all of them refuse to touch state.json while a run is active
 - `output/all_records.csv` — everything ever classified
 - `output/evidence/<ASIN>_<timestamp>.png` + `.html` — timestamped screenshot
   and page HTML for every match/unclear item
-- `output/run.log` — full activity log, including per-nav timings at DEBUG
-  (`nav 42 [classify] load=3.1s wait=8.2s html=1317kB <url>`)
+- `output/run.log` — full activity log for every command that touches the
+  network (`run`, `verify-matches`, `check`), including per-nav timings at
+  DEBUG and the browser/UA in use: `nav 42 [classify] load=3.1s wait=8.2s
+  html=1317kB <url>`
 - `output/.session.json` — the cookie jar, reused between runs and between
   session rotations. Delete it to start from a clean browser.
 - `state.json` — ASIN-keyed dedup record and search progress (do not delete;
