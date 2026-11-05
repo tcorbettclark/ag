@@ -54,7 +54,8 @@ class TestWriteReports(unittest.TestCase):
     def test_columns_are_stable(self):
         fields, _ = read(self.out("all_records.csv"))
         self.assertEqual(fields, COLUMNS)
-        self.assertEqual(fields[:3], ["asin", "classification", "title"])
+        self.assertEqual(fields[:4], ["asin", "classification", "verified_at",
+                                      "verify_result"])
 
     def test_files_are_split_by_classification(self):
         self.assertEqual([r["asin"] for r in read(self.out("matches.csv"))[1]],

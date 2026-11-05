@@ -43,18 +43,21 @@ One entry point, no loose scripts:
 | `rebuild-reports` | regenerate `output/*.csv` from state.json (no network) |
 | `reclassify` | re-apply `licensed_publishers` to existing records |
 | `requeue-unavailable` | re-queue `excluded_unavailable` records after a buy-box fix |
+| `verify-matches` | re-fetch every match and re-decide it (needs the network) |
 | `check <url>` | classify a single ASIN with buy-box forensics |
 
-Everything except `run` and `check` is offline and read-only-ish; all of them
-refuse to touch state.json while a run is active (single-writer lock,
-`output/.run.pid`).
+Everything except `run`, `verify-matches` and `check` is offline and
+read-only-ish; all of them refuse to touch state.json while a run is active
+(single-writer lock, `output/.run.pid`).
 
 ## Outputs
 
 - `output/matches.csv` — the findings: Christie-authored, English, buyable now,
   publisher not a HarperCollins imprint and not a known authorised licensee
   (see `licensed_publishers` in config.json — BBC, Audible, Orion, Mondadori,
-  Blackstone, Hachette/Le Masque, Der Hörverlag, …)
+  Blackstone, Hachette/Le Masque, Der Hörverlag, …). The `verified_at` and
+  `verify_result` columns say whether the listing was still there when it was
+  last re-checked (see "Verifying matches")
 - `output/unclear.csv` — flagged for human review (contaminated author credit,
   ambiguous publisher such as bare "Harper"/"Avon", missing publisher field, or
   `unclear_fetch_failed` — a page that stayed unreadable after
@@ -123,6 +126,40 @@ carries the same "to discuss automated access…" boilerplate as a captcha; the
 crawler deliberately does not match on it (that turned one dead ASIN into 65
 minutes of cooldowns and an aborted 14h run).
 
+## Verifying matches
+
+A `match` is a claim about the state of a listing on the day it was fetched.
+Self-published Kindle editions in particular disappear: of the first three
+matches re-checked after this command was added, one had already gone.
+
+```bash
+uv run christie-hunter verify-matches                 # every match
+uv run christie-hunter verify-matches --since 30      # only those not checked in 30 days
+uv run christie-hunter verify-matches --include-unclear
+uv run christie-hunter verify-matches --asin B0HNTNNCHG --asin B0HMJT8V14
+uv run christie-hunter verify-matches --limit 20 --for 20m
+```
+
+Each record is re-fetched and re-decided by exactly the same pipeline as a run,
+and the verdict becomes its `classification` — so `matches.csv` always means
+"a match right now", never "was a match in November". Nothing is deleted and
+nothing is rewritten silently:
+
+| field | meaning |
+|---|---|
+| `verified_at` | when it was last re-checked |
+| `verify_result` | `live`, `gone`, `changed`, or absent (never verified) |
+| `previous_classification` | what it was before the verdict changed |
+| `verify_note` | why it could not be checked, if it could not (`status 404`, …) |
+| `evidence` | **never touched** — for a listing that has gone, the old screenshot is the only proof left |
+
+An item that is gone becomes `excluded_dead_asin`; one that has gone out of
+stock becomes `excluded_unavailable` (and `requeue-unavailable` can bring it
+back later); one that has since been republished by HarperCollins moves to
+`excluded_harpercollins`. Records that could not be fetched at all are left
+exactly as they were and reported separately, so a bad night on Amazon never
+quietly empties `matches.csv`.
+
 ## Confirmed licensees
 
 `licensed_publishers` in config.json is a list of case-insensitive regexes
@@ -162,7 +199,7 @@ Back up two things, not one:
 
 | what | why |
 |---|---|
-| `state.json` | the logic: findings, backlog, search progress. Expensive to re-derive (rate-limited crawl) |
+| `state.json` | the logic: findings, backlog, search progress, verification history. Expensive to re-derive (rate-limited crawl) |
 | `output/evidence/` | the proof: timestamped PNG + HTML for every `match`/`unclear`. The record only stores the path; without the file it cannot be reproduced except by re-fetching the page |
 
 `config.json` and the works list determine what gets searched and how it is

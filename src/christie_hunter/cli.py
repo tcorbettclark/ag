@@ -21,7 +21,7 @@ from .store import (Store, active_run_pid, clear_lock, require_idle,
                     write_lock)
 
 COMMANDS = ("run", "reclassify", "rebuild-reports", "requeue-unavailable",
-            "check", "summary")
+            "verify-matches", "check", "summary")
 
 
 # --- the run ------------------------------------------------------------------
@@ -116,6 +116,16 @@ def run(cfg, hours=None, rescan=False, classify_only=False, search_only=False):
 
 # --- cli ----------------------------------------------------------------------
 
+def _duration(args):
+    """--for, parsed into hours; None means "use run_hours from config"."""
+    if not getattr(args, "duration", None):
+        return None
+    try:
+        return parse_duration(args.duration)
+    except ValueError as e:
+        raise SystemExit(f"error: {e}") from None
+
+
 def build_parser():
     ap = argparse.ArgumentParser(
         prog="christie-hunter",
@@ -138,6 +148,19 @@ def build_parser():
     sub.add_parser("rebuild-reports", help="regenerate output/*.csv from state.json")
     sub.add_parser("requeue-unavailable",
                    help="re-queue excluded_unavailable records")
+    pv = sub.add_parser("verify-matches",
+                        help="re-fetch every match and re-decide it")
+    pv.add_argument("--for", dest="duration", metavar="DURATION",
+                    help="stop after this long (default: run_hours in config.json)")
+    pv.add_argument("--since", dest="since_days", type=float, default=0.0,
+                    metavar="DAYS",
+                    help="skip records verified in the last DAYS (default: all)")
+    pv.add_argument("--include-unclear", action="store_true",
+                    help="also re-check unclear_* records")
+    pv.add_argument("--limit", type=int, metavar="N",
+                    help="check at most N records")
+    pv.add_argument("--asin", action="append", metavar="ASIN",
+                    help="verify only this record (repeatable)")
     sub.add_parser("summary", help="print classification counts from state.json")
     pc = sub.add_parser("check", help="classify one ASIN/URL with forensics")
     pc.add_argument("url", nargs="?", default="https://www.amazon.co.uk/dp/B0HJX3WB9T")
@@ -153,12 +176,7 @@ def main(argv=None):
     cfg = config_mod.load(CONFIG_FILE)
 
     if args.command == "run":
-        hours = None
-        if args.duration:
-            try:
-                hours = parse_duration(args.duration)
-            except ValueError as e:
-                raise SystemExit(f"error: {e}")
+        hours = _duration(args)
         Path(cfg["output_dir"]).mkdir(exist_ok=True)
         logging.basicConfig(
             level=logging.DEBUG,
@@ -184,6 +202,11 @@ def main(argv=None):
         return tools.rebuild_reports(cfg)
     if args.command == "requeue-unavailable":
         return tools.requeue_unavailable(cfg)
+    if args.command == "verify-matches":
+        return tools.verify_matches(
+            cfg, hours=_duration(args), since_days=args.since_days,
+            include_unclear=args.include_unclear, limit=args.limit,
+            only=args.asin)
     if args.command == "summary":
         return tools.dump_summary(cfg)
     if args.command == "check":

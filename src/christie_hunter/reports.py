@@ -4,9 +4,10 @@ import csv
 import logging
 from pathlib import Path
 
-COLUMNS = ["asin", "classification", "title", "author_line", "format",
-           "publisher", "language", "price", "url", "source",
-           "first_seen", "last_seen", "evidence"]
+COLUMNS = ["asin", "classification", "verified_at", "verify_result", "title",
+           "author_line", "format", "publisher", "language", "price", "url",
+           "source", "first_seen", "last_seen", "previous_classification",
+           "evidence"]
 
 
 def write_reports(store, cfg):
