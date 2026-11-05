@@ -25,6 +25,38 @@ COMMANDS = ("run", "reclassify", "rebuild-reports", "requeue-unavailable",
 
 
 # --- the run ------------------------------------------------------------------
+# --- the alternating loop -------------------------------------------------
+
+def _crawl(crawler, store, cfg, budget, rescan, classify_only, search_only):
+    """Enumerate, then classify, until the budget or the work runs out."""
+    attempted = set()   # searches this run has already tried (never retry)
+    reason = "completed"
+    while True:
+        start_navs = crawler.navs
+        if not classify_only:
+            # the enumeration phase gets its share of the budget only
+            crawler.budget = budget.scaled(cfg["search_share"])
+            search_phase(crawler, store, cfg, rescan, attempted)
+        if not search_only:
+            crawler.budget = budget
+            classify_pending(crawler, store)
+        if crawler.stop_requested:
+            raise StopRun("interrupted (Ctrl-C)")
+
+        worked = crawler.navs > start_navs
+        pending = 0 if search_only else len(store.pending)
+        stale = [] if classify_only else [
+            t.key for t in build_tasks(cfg) if t.key not in attempted]
+        if not pending and not stale:
+            reason = "nothing left to do"
+            break
+        if not worked:
+            reason = "no progress possible this pass"
+            break
+        if not crawler._budget_left():
+            break
+    return reason
+
 
 def run(cfg, hours=None, rescan=False, classify_only=False, search_only=False):
     """One run: enumerate what is stale, then classify the backlog, until the
@@ -49,40 +81,21 @@ def run(cfg, hours=None, rescan=False, classify_only=False, search_only=False):
 
     run_start = now_iso()
     reason = "completed"
-    attempted = set()   # searches this run has already tried (never retry)
     try:
         time.sleep(random.uniform(1, 10))  # don't start like a machine
         with sync_playwright() as pw:
             crawler.start(pw)
-            while True:
-                start_navs = crawler.navs
-                if not classify_only:
-                    # the enumeration phase gets its share of the budget only
-                    crawler.budget = budget.scaled(cfg["search_share"])
-                    search_phase(crawler, store, cfg, rescan, attempted)
-                if not search_only:
-                    crawler.budget = budget
-                    classify_pending(crawler, store)
-                if crawler.stop_requested:
-                    raise StopRun("interrupted (Ctrl-C)")
-
-                worked = crawler.navs > start_navs
-                pending = 0 if search_only else len(store.pending)
-                stale = [] if classify_only else [
-                    t.key for t in build_tasks(cfg) if t.key not in attempted]
-                if not pending and not stale:
-                    reason = "nothing left to do"
-                    break
-                if not worked:
-                    reason = "no progress possible this pass"
-                    break
-                if not crawler._budget_left():
-                    break
+            try:
+                reason = _crawl(crawler, store, cfg, budget, rescan,
+                                classify_only, search_only)
+            finally:
+                # must run *before* Playwright tears down, or the cookie jar
+                # cannot be saved
+                crawler.close()
     except StopRun as e:
         reason = str(e)
         logging.warning("run stopped: %s", reason)
     finally:
-        crawler.close()
         store.data["runs"].append({
             "started": run_start, "ended": now_iso(),
             "budget_hours": run_hours, "planned_end": budget.deadline.isoformat(),

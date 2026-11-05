@@ -56,12 +56,16 @@ refuse to touch state.json while a run is active (single-writer lock,
   (see `licensed_publishers` in config.json — BBC, Audible, Orion, Mondadori,
   Blackstone, Hachette/Le Masque, Der Hörverlag, …)
 - `output/unclear.csv` — flagged for human review (contaminated author credit,
-  ambiguous publisher such as bare "Harper"/"Avon", missing publisher field)
+  ambiguous publisher such as bare "Harper"/"Avon", missing publisher field, or
+  `unclear_fetch_failed` — a page that stayed unreadable after
+  `max_asin_attempts` tries)
 - `output/all_records.csv` — everything ever classified
 - `output/evidence/<ASIN>_<timestamp>.png` + `.html` — timestamped screenshot
   and page HTML for every match/unclear item
 - `output/run.log` — full activity log, including per-nav timings at DEBUG
   (`nav 42 [classify] load=3.1s wait=8.2s html=1317kB <url>`)
+- `output/.session.json` — the cookie jar, reused between runs and between
+  session rotations. Delete it to start from a clean browser.
 - `state.json` — ASIN-keyed dedup record and search progress (do not delete;
   it is what makes runs resumable)
 
@@ -74,6 +78,12 @@ refuse to touch state.json while a run is active (single-writer lock,
    novels, Westmacott romances, short story collections, non-fiction — with US
    title variants), both indices
 
+Search-result cards are read in one pass and pre-filtered: a card that is
+rendered but never says "Christie" cannot be a Christie book, so it is never
+fetched (that was 38% of all product-page navigations). Cards too short to
+judge are kept — a wasted fetch is cheaper than a missed match. Set
+`prefilter_cards: false` in config.json to turn this off.
+
 Every discovered ASIN is classified in gates: Christie credited →
 publisher is not a definite HarperCollins imprint → publisher is not an
 authorised licensee → Christie is the primary uncontaminated author →
@@ -81,10 +91,37 @@ English language → buyable-new right now. A run alternates the two phases —
 enumerate what is stale into the backlog, then classify the backlog — until
 the budget or the work runs out.
 
-Runtime is deliberately slow (4–10s random pauses, occasional long pauses,
-fresh browser session every ~20–35 navigations). A full sweep takes multiple
-nights; state carries the work forward. Measured on this setup: ~3 browser
-navigations/min, so an 8h night is roughly 2,300 ASINs.
+Runtime is deliberately slow (4–10s random pauses, occasional long pauses). A
+full sweep takes multiple nights; state carries the work forward. Measured on
+this setup: ~3 browser navigations/min, so an 8h night is roughly 2,300 ASINs.
+
+The browser session and its cookie jar last the whole run and are reused
+between runs (`output/.session.json`); a session is replaced only after a
+timeout or a block, which is precisely when a new one is worth having. Set
+`politeness.session_refresh_max` to a nav count to rotate on a timer instead.
+
+The backlog is not a FIFO queue: `take_pending` pops a random ASIN, so runs do
+not walk the same prefix in the same order every night.
+
+## When Amazon says no
+
+A single bad page must never end a run, so navigation failures are per-item:
+the item is put back on the queue and the crawl carries on. See
+`docs/anti-blocking.md` for the full reasoning.
+
+| what happened | how it is handled |
+|---|---|
+| 404 / 410 (removed ASIN) | recorded as `excluded_dead_asin`, dropped, **never** treated as a block |
+| 200 but not the page we asked for | `unexpected page`: retried later, then `unclear_fetch_failed` for review |
+| timeout / network error | one more session, retried later |
+| 429 / 503 / captcha interstitial | one short cooldown (`cooldown_min_s`–`cooldown_max_s`), fresh session, **different work** — then `max_cooldowns_per_run` of them ends the run |
+| `max_failure_streak` failures in a row | the site, not the ASINs: stop the pass instead of flagging the whole backlog |
+
+`max_asin_attempts` (default 3, config.json) is how many unreadable pages one
+ASIN may have before it is flagged instead of retried. Note that a 404 page
+carries the same "to discuss automated access…" boilerplate as a captcha; the
+crawler deliberately does not match on it (that turned one dead ASIN into 65
+minutes of cooldowns and an aborted 14h run).
 
 ## Confirmed licensees
 
@@ -148,6 +185,9 @@ Known loose ends:
 
 - the buy-box check (`_buyability`) is heuristic and was written against the
   late-2026 Kindle layout; `requeue-unavailable` exists for when it misfires
+- the search-result pre-filter trusts card text; a card whose title renders as
+  an image only would be dropped. `prefilter_cards: false` reverts to fetching
+  every ASIN on the page
 - non-English editions from Audible-family labels sometimes carry
   `Language: English` on the page, so the language gate can miss them —
   licensed publishers are excluded before that gate, which covers most cases

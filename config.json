@@ -1,7 +1,12 @@
 {
   "search": {
-    "generic_queries": ["agatha christie"],
-    "indices": ["stripbooks", "digital-text"],
+    "generic_queries": [
+      "agatha christie"
+    ],
+    "indices": [
+      "stripbooks",
+      "digital-text"
+    ],
     "generic_max_pages": 25,
     "title_max_pages": 3,
     "author_max_pages": 25
@@ -12,8 +17,11 @@
     "long_pause_chance": 0.08,
     "long_pause_min_s": 15,
     "long_pause_max_s": 45,
-    "session_refresh_min": 20,
-    "session_refresh_max": 35
+    "session_refresh_min": 0,
+    "session_refresh_max": 0,
+    "max_cooldowns_per_run": 3,
+    "cooldown_min_s": 90,
+    "cooldown_max_s": 210
   },
   "run_hours": 8,
   "max_navs_per_run": 2500,
@@ -27,25 +35,25 @@
     "^bantam\\s+audio\\b",
     "^bbc\\b",
     "^blackstone\\b",
-    "\\bchamps[\\s-]*[eé]lys[eé]es\\b",
+    "\\bchamps[\\s-]*[e\u00e9]lys[e\u00e9]es\\b",
     "^chronicle\\s+books\\b",
     "^classic\\s+collection$",
     "^the\\s+companion\\s+book\\s+club$",
     "^curious\\s+fox\\b",
     "^delhi\\s+open\\s+book",
-    "^der\\s+h(?:ö|oe)rverlag\\b",
+    "^der\\s+h(?:\u00f6|oe)rverlag\\b",
     "^dh\\s+audio\\b",
     "^diesterweg\\b",
-    "^(?:wydawnictwo\\s+)?dolno[śs]l[ąa]skie\\b",
+    "^(?:wydawnictwo\\s+)?dolno[\u015bs]l[\u0105a]skie\\b",
     "^goodmood\\b",
     "^g\\.?\\s*p\\.?\\s*putnam'?s?\\s+sons\\b",
     "^hachette\\b",
     "^harper\\s*fiction\\b",
     "^hyperion\\b",
     "^insight\\s+publica\\b",
-    "\\blatt(?:e|è|é)s\\b",
+    "\\blatt(?:e|\u00e8|\u00e9)s\\b",
     "^laurence\\s+king\\b",
-    "^(?:lgf|librairie\\s+g[eé]n[eé]rale\\s+fran[cç]aise|(?:le\\s+)?livre\\s+de\\s+poche)\\b",
+    "^(?:lgf|librairie\\s+g[e\u00e9]n[e\u00e9]rale\\s+fran[c\u00e7]aise|(?:le\\s+)?livre\\s+de\\s+poche)\\b",
     "\\blisten\\s+for\\s+pleasure\\b",
     "^macmillan\\s+(?:digital\\s+)?audio\\b",
     "\\bmasques?\\b",
@@ -58,5 +66,9 @@
     "^viz\\s+media\\b",
     "^w\\s*h\\.?\\s*smith\\b"
   ],
-  "output_dir": "output"
+  "output_dir": "output",
+  "browser_channel": "auto",
+  "max_asin_attempts": 3,
+  "prefilter_cards": true,
+  "max_failure_streak": 3
 }

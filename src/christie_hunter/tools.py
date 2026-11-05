@@ -84,12 +84,11 @@ def check_one(cfg, url):
 
     from playwright.sync_api import sync_playwright
 
-    from .constants import USER_AGENTS
     from .crawler import Crawler
 
     class NoSaveStore:
         """Stand-in for Store: same interface, but nothing is persisted."""
-        data = {"sources": {}}
+        data = {"sources": {}, "referers": {}, "attempts": {}}
 
         def save(self):
             pass
@@ -100,15 +99,9 @@ def check_one(cfg, url):
 
     crawler = Crawler(cfg, NoSaveStore())
     with sync_playwright() as pw:
-        crawler.browser = pw.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"])
-        crawler.context = crawler.browser.new_context(
-            user_agent=USER_AGENTS[0], viewport={"width": 1440, "height": 900},
-            locale="en-GB", timezone_id="Europe/London")
-        crawler.context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-        crawler.page = crawler.context.new_page()
+        # exactly the same launch/fingerprint path a real run uses, so that
+        # `check` tells you the truth about what Amazon serves this crawler
+        crawler.start(pw)
         crawler.page.set_default_timeout(5000)
 
         t0 = time.time()
@@ -156,7 +149,7 @@ def check_one(cfg, url):
             if any(w in line.lower() for w in
                    ["unavailable", "kindle price", "not yet published"]):
                 print("  line:", line.strip()[:120])
-        crawler.browser.close()
+        crawler.close()
     return 0
 
 

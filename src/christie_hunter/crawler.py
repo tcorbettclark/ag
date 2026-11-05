@@ -1,4 +1,10 @@
-"""The Playwright crawler: sessions, polite navigation, and page classification."""
+"""The Playwright crawler: sessions, polite navigation, and page classification.
+
+Navigation is defensive in one specific direction: a single bad *page* must
+never end a run. Timeouts, dead ASINs, soft blocks and layout changes are all
+recoverable per-item events (see `errors.PageFailure`); only a real captcha,
+repeated enough times, stops the run.
+"""
 
 import logging
 import random
@@ -9,8 +15,16 @@ from pathlib import Path
 from playwright.sync_api import TimeoutError as PWTimeout
 
 from .constants import (ASIN_RE, AUTHOR_CONTAMINATION, BASE, BLOCK_MARKERS,
-                        HC_AMBIGUOUS, HC_DEFINITE, USER_AGENTS, VIEWPORTS)
-from .errors import StopRun
+                        BLOCK_MAX_BYTES, CARD_NOISE, EXPECT_MARKERS,
+                        HC_AMBIGUOUS, HC_DEFINITE, SESSION_FILE, UA_TEMPLATE,
+                        VIEWPORTS)
+from .errors import (Blocked, DeadPage, StopRun, Transient, UnexpectedPage)
+
+# one JS round-trip for the whole results page, rather than one per card
+_CARDS_JS = """() => Array.from(
+    document.querySelectorAll('[data-component-type="s-search-result"]'))
+  .slice(0, 100)
+  .map(el => [el.getAttribute('data-asin') || '', el.innerText || ''])"""
 
 
 class Crawler:
@@ -24,7 +38,16 @@ class Crawler:
         self.navs = 0
         self.phase = "idle"          # search | classify — only used in debug logs
         self.budget = None           # set by the phase that is running
-        self.until_refresh = self._refresh_in()
+        self.block_hits = 0
+        self.cooldowns_used = 0
+        pol = cfg.get("politeness", {})
+        self.refresh_navs = self._refresh_in()      # 0 = never rotate on a timer
+        self.until_refresh = self.refresh_navs
+        self.max_cooldowns = pol.get("max_cooldowns_per_run", 3)
+        self.cooldown_s = (pol.get("cooldown_min_s", 90),
+                           pol.get("cooldown_max_s", 210))
+        self.session_file = Path(cfg["output_dir"]) / SESSION_FILE
+        self.ua = None
         self.stop_requested = False
         # authorised licensees (BBC audio, Laurence King puzzle books, ...) —
         # never rights violations, exclude outright like HC
@@ -33,27 +56,86 @@ class Crawler:
 
     def _refresh_in(self):
         p = self.cfg["politeness"]
-        return random.randint(p["session_refresh_min"], p["session_refresh_max"])
+        lo = p.get("session_refresh_min", 0)
+        hi = p.get("session_refresh_max", 0)
+        if not hi:
+            return 0                       # cookie jar lives as long as the run
+        return random.randint(lo, max(lo, hi))
 
     # -- sessions --
+    def _launch(self, pw):
+        """Prefer a real Chrome/Chromium build over the bundled headless shell.
+
+        The headless shell leaks `navigator.plugins == 0`,
+        `pdfViewerEnabled == false`, `window.chrome === undefined` and a
+        SwiftShader WebGL renderer; the full browser in `--headless=new` leaks
+        none of those.
+        """
+        args = ["--disable-blink-features=AutomationControlled"]
+        wanted = self.cfg.get("browser_channel", "auto")
+        for channel in ([wanted] if wanted not in (None, "", "auto")
+                        else ["chrome", "chromium", None]):
+            try:
+                b = pw.chromium.launch(headless=True, args=args, channel=channel)
+                logging.info("browser: %s (%s)",
+                             channel or "bundled chromium", b.version)
+                return b
+            except Exception as e:
+                logging.debug("cannot launch channel=%s: %s", channel, e)
+        raise RuntimeError("no usable chromium/chrome build")
+
+    def _detect_ua(self):
+        """The browser's own UA, with the headless token removed.
+
+        Hardcoding a UA (as this used to) guarantees a version string that
+        disagrees with the browser's `userAgentData.brands` and TLS stack; the
+        built-in one is right by construction.
+        """
+        major = (self.browser.version or "0").split(".")[0]
+        fallback = UA_TEMPLATE.format(version=major)
+        ctx = None
+        try:
+            ctx = self.browser.new_context()
+            ua = ctx.new_page().evaluate("() => navigator.userAgent")
+            return (ua or fallback).replace("HeadlessChrome", "Chrome")
+        except Exception:
+            return fallback
+        finally:
+            if ctx:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+
     def start(self, pw):
         self.pw = pw
-        self.browser = pw.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"])
+        self.browser = self._launch(pw)
+        self.ua = self._detect_ua()
+        logging.debug("user agent: %s", self.ua)
         self.new_session()
 
+    def _save_cookies(self):
+        if not self.context:
+            return
+        try:
+            self.context.storage_state(path=str(self.session_file))
+        except Exception:
+            pass
+
     def new_session(self, warmup=True):
+        self._save_cookies()
         if self.context:
             try:
                 self.context.close()
             except Exception:
                 pass
-        ua = random.choice(USER_AGENTS)
         vw = random.choice(VIEWPORTS)
+        reuse = self.session_file if self.session_file.exists() else None
         self.context = self.browser.new_context(
-            user_agent=ua, viewport={"width": vw[0], "height": vw[1]},
-            locale="en-GB", timezone_id="Europe/London")
+            user_agent=self.ua, viewport={"width": vw[0], "height": vw[1]},
+            locale="en-GB", timezone_id="Europe/London",
+            storage_state=str(reuse) if reuse else None,
+            screen={"width": vw[0], "height": vw[1]})
         self.context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             "window.chrome = window.chrome || {runtime: {}};")
@@ -76,6 +158,7 @@ class Crawler:
 
     def close(self):
         try:
+            self._save_cookies()
             if self.context:
                 self.context.close()
             if self.browser:
@@ -108,56 +191,113 @@ class Crawler:
         if not self._budget_left():
             raise StopRun(self.budget.why_exhausted(self.navs))
 
-    # -- navigation with block detection --
-    def goto(self, url):
-        backoffs = [300, 900, 2700]  # 5 min, 15 min, 45 min
-        for attempt in range(4):
-            self._check_stop()
-            self.navs += 1
-            self.until_refresh -= 1
-            if self.until_refresh <= 0:
-                logging.info("starting a fresh browser session")
-                self.new_session()
-                self.until_refresh = self._refresh_in()
-            t0 = time.monotonic()
-            try:
-                resp = self.page.goto(url, timeout=45000,
-                                      wait_until="domcontentloaded")
-                self._dismiss_cookie_banner()
-                self._human_scroll()
-                content = self.page.content()
-                status = resp.status if resp else 200
-                if status in (429, 503) or self._is_blocked(content):
-                    wait = backoffs[attempt] if attempt < 3 else 0
-                    logging.warning("block detected (status %s) on %s", status, url)
-                    if wait == 0:
-                        raise StopRun("blocked repeatedly; resumable, run again later")
-                    logging.warning("cooling down %.0f min then new session",
-                                    wait / 60)
-                    time.sleep(wait)
-                    self.new_session()
-                    continue
-                load_s = time.monotonic() - t0
-                t1 = time.monotonic()
-                self._pause()
-                wait_s = time.monotonic() - t1
-                logging.debug("nav %d [%s] load=%.1fs wait=%.1fs html=%.0fkB %s",
-                              self.navs, self.phase, load_s, wait_s,
-                              len(content) / 1024, url)
-                if load_s > 120:
-                    logging.warning("nav %d took %.0fs — machine slept or Amazon "
-                                    "stalled", self.navs, load_s)
-                return content
-            except PWTimeout:
-                logging.warning("timeout after %.0fs on %s",
-                                time.monotonic() - t0, url)
-                self.new_session()
-                continue
-        raise StopRun("repeated failures on " + url)
+    def _maybe_rotate_session(self):
+        if not self.refresh_navs:
+            return
+        self.until_refresh -= 1
+        if self.until_refresh <= 0:
+            logging.info("rotating session after %d navigations "
+                         "(same cookie jar)", self.refresh_navs)
+            self.new_session()
+            self.until_refresh = self.refresh_navs
 
-    def _is_blocked(self, content):
-        low = content[:6000].lower()
+    # -- navigation with block detection --
+    def goto(self, url, expect=None, referer=None):
+        """Fetch one page. Returns its HTML.
+
+        `expect` is "product" or "search": it turns "did we actually get the
+        page we asked for?" into an explicit check, so a soft block or a layout
+        change fails loudly instead of being parsed as if it were content.
+
+        Raises DeadPage / Transient / Blocked / UnexpectedPage for single-page
+        problems (the caller carries on) and StopRun when the run is over.
+        """
+        self._check_stop()
+        self.navs += 1
+        self._maybe_rotate_session()
+
+        t0 = time.monotonic()
+        kwargs = {"timeout": 45000, "wait_until": "domcontentloaded"}
+        if referer:
+            kwargs["referer"] = referer
+        resp = None
+        try:
+            resp = self.page.goto(url, **kwargs)
+        except PWTimeout:
+            took = time.monotonic() - t0
+            logging.warning("timeout after %.0fs on %s", took, url)
+            self.new_session()
+            raise Transient(f"timeout ({took:.0f}s)") from None
+        except Exception as e:                       # net::ERR_*, crash, ...
+            logging.warning("navigation failed on %s: %s", url, e)
+            self.new_session()
+            raise Transient(f"navigation failed: {e}") from None
+
+        status = resp.status if resp else 200
+        self._dismiss_cookie_banner()
+        self._human_scroll()
+        content = self.page.content()
+
+        # a dead ASIN is not a block: it is a permanently gone product
+        if status in (404, 410):
+            logging.info("dead page (status %s) %s", status, url)
+            raise DeadPage(f"status {status}")
+
+        if status in (429, 503) or self._is_captcha(content):
+            self._on_block(status, url)              # returns only if we may continue
+
+        if expect and not self._looks_like(content, expect):
+            logging.warning("unexpected %s page (status %s, %.0fkB): %s",
+                            expect, status, len(content) / 1024, url)
+            raise UnexpectedPage(f"not a {expect} page (status {status}, "
+                                 f"{len(content) / 1024:.0f}kB)")
+
+        load_s = time.monotonic() - t0
+        t1 = time.monotonic()
+        self._pause()
+        wait_s = time.monotonic() - t1
+        logging.debug("nav %d [%s] load=%.1fs wait=%.1fs html=%.0fkB %s",
+                      self.navs, self.phase, load_s, wait_s,
+                      len(content) / 1024, url)
+        if load_s > 120:
+            logging.warning("nav %d took %.0fs — machine slept or Amazon "
+                            "stalled", self.navs, load_s)
+        return content
+
+    def _on_block(self, status, url):
+        """Cool down once and let the caller move on; stop only when it is
+        clearly not a one-off.
+
+        The old ladder slept 5/15/45 min and retried *the same URL* each time,
+        so one blocked page cost an hour and then ended the run. Now a block
+        costs one short, capped cooldown and the caller retries different work.
+        """
+        self.block_hits += 1
+        logging.warning("block detected (status %s) on %s", status, url)
+        if self.cooldowns_used >= self.max_cooldowns:
+            raise StopRun(f"blocked {self.block_hits} times in a row "
+                          f"(cooled down {self.cooldowns_used}x); "
+                          "resumable, run again later")
+        self.cooldowns_used += 1
+        wait = random.uniform(*self.cooldown_s)
+        logging.warning("cooling down %.0fs then starting a fresh session "
+                        "(cooldown %d/%d)", wait, self.cooldowns_used,
+                        self.max_cooldowns)
+        time.sleep(wait)
+        self.new_session()
+        raise Blocked(f"blocked (status {status}); cooled down, "
+                      "continuing with other work")
+
+    def _is_captcha(self, content):
+        if len(content) > BLOCK_MAX_BYTES:
+            return False                # a full page, not an interstitial
+        low = content[:20000].lower()
         return any(m in low for m in BLOCK_MARKERS)
+
+    @staticmethod
+    def _looks_like(content, expect):
+        low = content[:400000].lower()
+        return any(m in low for m in EXPECT_MARKERS.get(expect, ()))
 
     def _dismiss_cookie_banner(self):
         # count() is instant; clicking blind burned 2.5s per nav (~16% of a run)
@@ -178,6 +318,62 @@ class Crawler:
             if a not in asins:
                 asins.append(a)
         return asins
+
+    def extract_cards(self):
+        """[(asin, card_text)] for the search-result cards on the current page.
+
+        Empty on pages that have no s-search-result cards (the author page, a
+        product page), which is the caller's cue to fall back to a raw scan.
+        """
+        try:
+            rows = self.page.evaluate(_CARDS_JS) or []
+        except Exception as e:
+            logging.debug("card extraction failed: %s", e)
+            return []
+        cards, seen = [], set()
+        for asin, text in rows:
+            if len(asin) != 10 or asin in seen:
+                continue
+            seen.add(asin)
+            cards.append((asin, text or ""))
+        return cards
+
+    @staticmethod
+    def _card_wanted(text):
+        """Is this result card worth a product-page fetch?
+
+        38% of the last run's navigations were pages that were never Christie
+        books — sponsored cards and "customers also viewed" filler. A card that
+        is rendered but never says "Christie" cannot be a Christie book, so it
+        can be skipped without a fetch. Anything unrendered/short is kept: the
+        cost of a wasted fetch is far lower than that of a missed match.
+        """
+        low = (text or "").lower()
+        if len(low) < 20:
+            return True
+        if any(n in low for n in CARD_NOISE):
+            return False
+        return "christie" in low
+
+    def discover(self, content):
+        """ASINs on a listing page, pre-filtered.
+
+        Returns (asins, dropped, n_cards). `n_cards == 0` on pages that have no
+        result cards at all, which is how the caller tells "this search has
+        run out of results" from "every card here was filtered out".
+        """
+        if not self.cfg.get("prefilter_cards", True):
+            return self.extract_asins(content), 0, 0
+        cards = self.extract_cards()
+        if not cards:
+            return self.extract_asins(content), 0, 0
+        keep, dropped = [], 0
+        for asin, text in cards:
+            if self._card_wanted(text):
+                keep.append(asin)
+            else:
+                dropped += 1
+        return keep, dropped, len(cards)
 
     def parse_product(self, asin, content):
         """Extract and classify one product page. Returns (classification, fields)."""
