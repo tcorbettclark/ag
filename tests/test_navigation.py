@@ -219,6 +219,19 @@ class TestPageSignals(unittest.TestCase):
             '<div data-component-type="s-search-result">', "search"))
         self.assertTrue(self.crawler._looks_like("No results for B00X", "search"))
 
+    def test_prime_video_pages_are_recognised_as_non_books(self):
+        video = ('<html><body><div id="nav-belt"></div>'
+                 '<h1>Witness For The Prosecution</h1>'
+                 '<a href="/gp/video/detail/B01AG191RA">Watch</a></body></html>')
+        self.assertTrue(self.crawler._is_non_book_page(video))
+        self.assertFalse(self.crawler._is_non_book_page(PRODUCT_HTML))
+
+    def test_a_book_page_is_never_treated_as_a_non_book_page(self):
+        # a real book page with a Prime Video carousel must stay a book page:
+        # the exemption is only consulted when #productTitle is absent
+        book = PRODUCT_HTML + '<a href="/gp/video/detail/B01AG191RA">Watch</a>'
+        self.assertTrue(self.crawler._looks_like(book, "product"))
+
     def test_card_prefilter_keeps_anything_it_is_unsure_about(self):
         want = self.crawler._card_wanted
         self.assertTrue(want("Murder on the Orient Express by Agatha Christie"))

@@ -178,6 +178,7 @@ Expected effect: the 2026-11-04 run would have completed its 14 h.
 |---|---|
 | 0.1 404/410 -> `excluded_dead_asin`, never a block, never retried | `Crawler.goto`, `search.classify_pending` |
 | 0.2 captcha-only `BLOCK_MARKERS`, size guard, positive `expect=` page check | `constants.py`, `Crawler._is_captcha` / `_looks_like` |
+| 0.2b the `expect` check exempts recognised non-book pages (Prime Video, Amazon Music), which are a *result*, not a failure | `constants.NON_BOOK_MARKERS`, `Crawler._is_non_book_page` |
 | 0.3 per-ASIN attempt counter -> `unclear_fetch_failed` after 3 | `Store.note_failure`, `search.classify_pending` |
 | 0.3b `max_failure_streak`: 3 failures in a row stops the pass instead of flagging the whole backlog | `search.classify_pending` |
 | 0.4 one short capped cooldown, then different work; no retry of the same URL | `Crawler._on_block` |
@@ -205,3 +206,19 @@ Verified against the live site at the time of writing:
 Not implemented (still open): 2.2 search-by-ASIN fallback, 2.3 interleaving
 searches into the classify phase, 2.4 ISBN-10 side-door, 2.5 deliberate
 slowdown.
+
+### Follow-up, 2026-11-05 (same day)
+
+The first version of 0.2 was too strict in the other direction: three Prime
+Video pages in a row tripped `max_failure_streak` and ended a run after 19 s
+of a 1 h budget. A "film adaptation" is one of the most common things a
+Christie book search returns, and `parse_product` already had a branch for it
+(`if not title: excluded_not_christie`), which the `expect` gate was firing
+before.
+
+Fixed by exempting pages that positively look like content but not a book
+(`/gp/video`, `instant-video`, `prime video`) — and only those, so a genuine
+layout change still fails loudly rather than silently excluding everything.
+23 stale attempt counters from the false positives were cleared and the one
+mislabelled record (`B0921KP1PC`, an Amazon Music album) was re-verified into
+`excluded_not_christie`.

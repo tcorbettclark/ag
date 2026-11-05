@@ -62,7 +62,9 @@ read-only-ish; all of them refuse to touch state.json while a run is active
   ambiguous publisher such as bare "Harper"/"Avon", missing publisher field, or
   `unclear_fetch_failed` — a page that stayed unreadable after
   `max_asin_attempts` tries)
-- `output/all_records.csv` — everything ever classified
+- `output/all_records.csv` — everything ever classified. `note` explains the
+  verdict where the classification alone is terse (`not a book listing`,
+  `3 attempts: …`)
 - `output/evidence/<ASIN>_<timestamp>.png` + `.html` — timestamped screenshot
   and page HTML for every match/unclear item
 - `output/run.log` — full activity log for every command that touches the
@@ -117,7 +119,8 @@ the item is put back on the queue and the crawl carries on. See
 | what happened | how it is handled |
 |---|---|
 | 404 / 410 (removed ASIN) | recorded as `excluded_dead_asin`, dropped, **never** treated as a block |
-| 200 but not the page we asked for | `unexpected page`: retried later, then `unclear_fetch_failed` for review |
+| 200, a real page, but not a book listing (Prime Video, Amazon Music, merch) | recorded as `excluded_not_christie` with the page heading and `note: not a book listing` — a result, not a failure |
+| 200 but not the page we asked for, and not recognisably anything | `unexpected page`: retried later, then `unclear_fetch_failed` for review |
 | timeout / network error | one more session, retried later |
 | 429 / 503 / captcha interstitial | one short cooldown (`cooldown_min_s`–`cooldown_max_s`), fresh session, **different work** — then `max_cooldowns_per_run` of them ends the run |
 | `max_failure_streak` failures in a row | the site, not the ASINs: stop the pass instead of flagging the whole backlog |

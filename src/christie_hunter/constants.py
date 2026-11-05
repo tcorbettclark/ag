@@ -66,6 +66,12 @@ EXPECT_MARKERS = {
                "no results for"],
 }
 
+# Pages that are real Amazon content but never a book listing — the Prime Video
+# page for a film adaptation turns up constantly in a Christie book search.
+# Only consulted when the product-page markers are already missing, so a real
+# book page can never be diverted here.
+NON_BOOK_MARKERS = ["/gp/video", "instant-video", "prime video"]
+
 # Search-result cards that are not books at all (Amazon mixes these into
 # organic results). Cards are also dropped if they do not mention Christie;
 # see Crawler._card_wanted.

@@ -16,8 +16,8 @@ from playwright.sync_api import TimeoutError as PWTimeout
 
 from .constants import (ASIN_RE, AUTHOR_CONTAMINATION, BASE, BLOCK_MARKERS,
                         BLOCK_MAX_BYTES, CARD_NOISE, EXPECT_MARKERS,
-                        HC_AMBIGUOUS, HC_DEFINITE, SESSION_FILE, UA_TEMPLATE,
-                        VIEWPORTS)
+                        HC_AMBIGUOUS, HC_DEFINITE, NON_BOOK_MARKERS,
+                        SESSION_FILE, UA_TEMPLATE, VIEWPORTS)
 from .errors import (Blocked, DeadPage, StopRun, Transient, UnexpectedPage)
 
 # one JS round-trip for the whole results page, rather than one per card
@@ -247,10 +247,18 @@ class Crawler:
             self._on_block(status, url)              # returns only if we may continue
 
         if expect and not self._looks_like(content, expect):
-            logging.warning("unexpected %s page (status %s, %.0fkB): %s",
-                            expect, status, len(content) / 1024, url)
-            raise UnexpectedPage(f"not a {expect} page (status {status}, "
-                                 f"{len(content) / 1024:.0f}kB)")
+            if expect == "product" and self._is_non_book_page(content):
+                # A film or merch page found by a book search is a *result*, not
+                # a failure: parse_product files it as excluded_not_christie.
+                # Treating it as a failed fetch is what stopped a run after 3
+                # navs on three Prime Video listings.
+                logging.info("not a book listing (status %s, %.0fkB): %s",
+                             status, len(content) / 1024, url)
+            else:
+                logging.warning("unexpected %s page (status %s, %.0fkB): %s",
+                                expect, status, len(content) / 1024, url)
+                raise UnexpectedPage(f"not a {expect} page (status {status}, "
+                                     f"{len(content) / 1024:.0f}kB)")
 
         load_s = time.monotonic() - t0
         t1 = time.monotonic()
@@ -293,6 +301,18 @@ class Crawler:
             return False                # a full page, not an interstitial
         low = content[:20000].lower()
         return any(m in low for m in BLOCK_MARKERS)
+
+    @staticmethod
+    def _is_non_book_page(content):
+        """A real Amazon page that can never be a book listing (e.g. Prime Video).
+
+        Only consulted once the product-page markers are already missing, so a
+        real book page cannot be diverted here — and only a page carrying one of
+        these markers is exempted from the `expect` check, which keeps a layout
+        change failing loudly instead of silently excluding everything.
+        """
+        low = content[:400000].lower()
+        return any(m in low for m in NON_BOOK_MARKERS)
 
     @staticmethod
     def _looks_like(content, expect):
@@ -408,6 +428,13 @@ class Crawler:
             "source": self.store.data.get("sources", {}).get(asin, ""),
         }
 
+        # 0. a real page that is not a book listing at all (Prime Video, merch).
+        #    Not a Christie book, and worth naming so the record is readable.
+        if not title and self._is_non_book_page(content):
+            fields["title"] = self._page_heading()
+            fields["note"] = "not a book listing"
+            return "excluded_not_christie", fields
+
         # --- classification pipeline (order matters; first exclusion wins) ---
 
         def hc_class(pub_value):
@@ -467,6 +494,17 @@ class Crawler:
                 return "unclear_publisher", fields
             return "match", fields
         return "unclear_no_publisher", fields
+
+    def _page_heading(self):
+        """<h1> (then <title>) for a page with no #productTitle."""
+        for sel in ("h1", "title"):
+            try:
+                t = self.page.locator(sel).first.inner_text().strip()
+                if t:
+                    return re.sub(r"\s+", " ", t)
+            except Exception:
+                continue
+        return ""
 
     def _first_price(self):
         """First .a-offscreen element that looks like a GBP price (layout-agnostic)."""
