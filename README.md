@@ -44,6 +44,7 @@ One entry point, no loose scripts:
 | `reclassify` | re-apply `licensed_publishers` to existing records |
 | `requeue-unavailable` | re-queue `excluded_unavailable` records after a buy-box fix |
 | `verify-matches` | re-fetch every match and re-decide it (needs the network) |
+| `export-excel` | write `output/christie-review.xlsx` for a non-technical reader |
 | `check <url>` | classify a single ASIN with buy-box forensics |
 
 Everything except `run`, `verify-matches` and `check` is offline and
@@ -62,6 +63,8 @@ read-only-ish; all of them refuse to touch state.json while a run is active
   ambiguous publisher such as bare "Harper"/"Avon", missing publisher field, or
   `unclear_fetch_failed` — a page that stayed unreadable after
   `max_asin_attempts` tries)
+- `output/christie-review.xlsx` — the workbook to hand to someone else (see
+  "The review workbook" below). Built from state.json, so the CSVs are optional
 - `output/all_records.csv` — everything ever classified. `note` explains the
   verdict where the classification alone is terse (`not a book listing`,
   `3 attempts: …`)
@@ -130,6 +133,51 @@ ASIN may have before it is flagged instead of retried. Note that a 404 page
 carries the same "to discuss automated access…" boilerplate as a captcha; the
 crawler deliberately does not match on it (that turned one dead ASIN into 65
 minutes of cooldowns and an aborted 14h run).
+
+## The review workbook
+
+```bash
+uv run christie-hunter export-excel                 # -> output/christie-review.xlsx
+uv run christie-hunter export-excel --path /tmp/x.xlsx
+```
+
+One workbook, five visible sheets plus a hidden one, built from `state.json`
+rather than the CSVs, so the CSV reports can be dropped without affecting it.
+It is offline, read-only, and refuses to run while a crawl is active.
+
+| sheet | rows now | contents |
+|---|---|---|
+| `Summary` | — | counts, matches by publisher, what the labels mean, how to use it |
+| `Matches` | 84 | the findings, grouped by publisher then title |
+| `Needs review` | 56 | `unclear_author` / `unclear_publisher` / `unclear_no_publisher` / `unclear_fetch_failed` |
+| `Could not read` | 59 | `unclear_parse_fail`: the page was fetched but not parsed |
+| `Gone or changed` | 12 | was a match, no longer one (removed, out of stock, re-published) |
+
+`unclear_parse_fail` is kept off the review sheet deliberately: it is half the
+"unclear" pile and has no title, author or price, so mixing it in with real
+findings makes the document look unreliable.
+
+**It is a living document.** The recipient fills in the last column,
+`Reviewer notes`; those notes are read back from the previous file and rewritten
+on the next `export-excel`, keyed by ASIN. So:
+
+- notes survive a re-export even when rows move, appear or are re-sorted;
+- notes for a listing that later disappears are kept in the hidden `_state`
+  sheet and restored if it comes back;
+- everything *else* is regenerated — editing any other column is a temporary
+  change, so put your annotations in the notes column;
+- re-export to the same path; renaming or moving the workbook starts it afresh
+  (a copy is still readable, but its notes will not be picked up).
+
+Screenshots are **not** in the workbook — `output/evidence/` stays for the
+technical user. Each row links to the live Amazon page instead, which is also
+why "Checked on" matters: a dead listing's link now 404s, and that is a real
+finding, not a broken file.
+
+Formatting is done for reading rather than for data processing: frozen header
+and first column, autofilter, coloured tabs, wrapped titles with row heights
+sized to fit, `£` prices, dates as `05 Nov 2026`, and an ASIN column in a
+monospace font for anyone who needs to quote it.
 
 ## Verifying matches
 
@@ -220,8 +268,9 @@ uv run python -m unittest discover -s tests -t . -v
 
 Layout: `src/christie_hunter/` — `budget.py` (duration/deadline maths),
 `crawler.py` (Playwright + classification pipeline), `search.py` (the two
-phases), `store.py` (state.json + writer lock), `reports.py`, `tools.py`
-(maintenance commands), `cli.py`, `works.py` (the canon).
+phases), `store.py` (state.json + writer lock), `reports.py`, `excel.py` (the
+review workbook), `tools.py` (maintenance commands), `cli.py`, `works.py` (the
+canon).
 
 Known loose ends:
 

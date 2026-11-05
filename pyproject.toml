@@ -4,6 +4,7 @@ version = "0.2.0"
 description = "Find English-language Agatha Christie books/ebooks on amazon.co.uk NOT published by HarperCollins"
 requires-python = ">=3.11"
 dependencies = [
+    "openpyxl>=3.1.5",
     "playwright>=1.49",
 ]
 

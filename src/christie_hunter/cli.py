@@ -10,7 +10,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-from . import __version__, config as config_mod, tools
+from . import __version__, config as config_mod, excel, tools
 from .budget import RunBudget, format_hours, parse_duration
 from .constants import CONFIG_FILE, now_iso
 from .crawler import Crawler
@@ -21,7 +21,7 @@ from .store import (Store, active_run_pid, clear_lock, require_idle,
                     write_lock)
 
 COMMANDS = ("run", "reclassify", "rebuild-reports", "requeue-unavailable",
-            "verify-matches", "check", "summary")
+            "verify-matches", "check", "export-excel", "summary")
 
 
 # --- the run ------------------------------------------------------------------
@@ -180,6 +180,10 @@ def build_parser():
                     help="check at most N records")
     pv.add_argument("--asin", action="append", metavar="ASIN",
                     help="verify only this record (repeatable)")
+    pe = sub.add_parser("export-excel",
+                        help="write the review workbook for a non-technical reader")
+    pe.add_argument("--path", metavar="PATH",
+                    help=f"where to write it (default: output/{excel.WORKBOOK_NAME})")
     sub.add_parser("summary", help="print classification counts from state.json")
     pc = sub.add_parser("check", help="classify one ASIN/URL with forensics")
     pc.add_argument("url", nargs="?", default="https://www.amazon.co.uk/dp/B0HJX3WB9T")
@@ -225,6 +229,9 @@ def main(argv=None):
                 only=args.asin)
         finally:
             clear_lock(cfg)
+    if args.command == "export-excel":
+        excel.export(cfg, args.path)
+        return 0
     if args.command == "summary":
         return tools.dump_summary(cfg)
     if args.command == "check":
